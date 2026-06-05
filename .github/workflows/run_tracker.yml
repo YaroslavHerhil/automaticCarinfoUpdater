@@ -27,5 +27,6 @@ jobs:
           API_USERNAME: ${{ secrets.API_USERNAME }}
           API_PASSWORD: ${{ secrets.API_PASSWORD }}
           WEBHOOK_URL:  ${{ secrets.WEBHOOK_URL }}
+          CARAPI_URL:  ${{ secrets.CARAPI_URL }}
         run: python main.py   
  
