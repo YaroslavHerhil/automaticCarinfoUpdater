@@ -2,9 +2,8 @@ name: Stavario GPS Sync
 
 on:
   schedule:
-    # Runs every 30 minutes - adjust as needed
     - cron: "*/30 * * * *"
-  workflow_dispatch:   # allows manual trigger from GitHub UI or cron-job.org
+  workflow_dispatch:   
 
 jobs:
   sync:

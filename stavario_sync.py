@@ -405,20 +405,17 @@ async def write_gps_to_odoo(
 # ---------------------------------------------------------------------------
 # More utility,  datetime conversion
 # ---------------------------------------------------------------------------
-
 def to_odoo_dt(iso_str: str | None) -> str | None:
     """
-    Converts a Stavario ISO 8601 datetime string to the format Odoo expects.
-    e.g. "2026-06-11T08:30:00.000Z" -> "2026-06-11 08:30:00"
-    Returns None if input is None or unparseable.
+    Converts Stavario datetime string to Odoo's expected format.
+    e.g. "2026-06-11T08:30:00.000" → "2026-06-11 08:30:00"
     """
     if not iso_str:
         return None
     try:
-        dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
-        return dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        return datetime.fromisoformat(iso_str).strftime("%Y-%m-%d %H:%M:%S")
     except ValueError:
-        log.warning(f"Could not parse datetime '{iso_str}' - passing as-is.")
+        log.warning(f"Could not parse datetime '{iso_str}' — passing as-is.")
         return iso_str
 
 # ---------------------------------------------------------------------------
