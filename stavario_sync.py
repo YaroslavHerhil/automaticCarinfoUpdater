@@ -58,21 +58,6 @@ cfg = Config()
 
 
 
-
-class Config:
-    base_url:         str = "https://stavariooldapi.azurewebsites.net/".rstrip("/")
-    username:         str = "yarik.342.ua.itstep@gmail.com"
-    password:         str = "lmafik4ezw"
-    login_path:       str = "/Auth"
-    list_path:        str = "/Records/GetRecordsList"
-    detail_path:      str = "/Records/GetRecordDetail"
-    odoo_url:     str = "https://globalee.odoo.com/json/2"
-    odoo_db:      str = "globalee"
-    odoo_api_key: str = "1e4e5454277c149ea49340c97135298433eb15ba"
-    page_size:        int = int(100)
-    max_concurrent:   int = int(10)
-
-
 # ---------------------------------------------------------------------------
 # Auth
 # ---------------------------------------------------------------------------
