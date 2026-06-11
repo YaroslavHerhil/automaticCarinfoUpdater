@@ -1,0 +1,37 @@
+name: Stavario GPS Sync
+
+on:
+  schedule:
+    # Runs every 30 minutes - adjust as needed
+    - cron: "*/30 * * * *"
+  workflow_dispatch:   # allows manual trigger from GitHub UI or cron-job.org
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install aiohttp
+
+      - name: Run sync
+        env:
+          STAVARIO_BASE_URL:    ${{ secrets.STAVARIO_BASE_URL }}
+          STAVARIO_USERNAME:    ${{ secrets.STAVARIO_USERNAME }}
+          STAVARIO_PASSWORD:    ${{ secrets.STAVARIO_PASSWORD }}
+          STAVARIO_LOGIN_PATH:  ${{ secrets.STAVARIO_LOGIN_PATH }}
+          STAVARIO_LIST_PATH:   ${{ secrets.STAVARIO_LIST_PATH }}
+          STAVARIO_DETAIL_PATH: ${{ secrets.STAVARIO_DETAIL_PATH }}
+          ODOO_WEBHOOK_URL:     ${{ secrets.ODOO_WEBHOOK_URL }}
+          ODOO_WEBHOOK_TOKEN:   ${{ secrets.ODOO_WEBHOOK_TOKEN }}
+          PAGE_SIZE:            "100"
+          MAX_CONCURRENT:       "10"
+        run: python stavario_sync.py
