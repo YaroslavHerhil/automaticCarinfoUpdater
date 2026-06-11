@@ -53,11 +53,24 @@ class Config:
     odoo_api_key: str = os.environ["ODOO_API_KEY"]
     page_size:    int = int(os.environ.get("PAGE_SIZE", 100))
     max_concurrent: int = int(os.environ.get("MAX_CONCURRENT", 10))
-    # "gps" = update GPS fields on hr.employee (current behaviour)
-    # "attendance" = create/close hr.attendance records
-    sync_mode:    str = os.environ.get("SYNC_MODE", "gps")
 
 cfg = Config()
+
+
+
+
+class Config:
+    base_url:         str = "https://stavariooldapi.azurewebsites.net/".rstrip("/")
+    username:         str = "yarik.342.ua.itstep@gmail.com"
+    password:         str = "lmafik4ezw"
+    login_path:       str = "/Auth"
+    list_path:        str = "/Records/GetRecordsList"
+    detail_path:      str = "/Records/GetRecordDetail"
+    odoo_url:     str = "https://globalee.odoo.com/json/2"
+    odoo_db:      str = "globalee"
+    odoo_api_key: str = "1e4e5454277c149ea49340c97135298433eb15ba"
+    page_size:        int = int(100)
+    max_concurrent:   int = int(10)
 
 
 # ---------------------------------------------------------------------------
@@ -304,11 +317,13 @@ async def odoo_call(
 
 
 # ---------------------------------------------------------------------------
-# Step 4 - Build Odoo employee lookup and write GPS data
+# Step 4 - Build Odoo employee lookup and write GPS data    
+# Deprecated.
 # ---------------------------------------------------------------------------
 
 async def build_odoo_lookup(session: aiohttp.ClientSession) -> dict[str, int]:
     """
+    !!DEPRECATED!!
     Fetches all hr.employee records that have x_studio_cislo_stavario set.
     Returns {code: odoo_employee_id} where code is the 3-char Stavario identifier.
     Logs a warning for any duplicate codes (shouldn't happen, but good to know).
@@ -422,7 +437,7 @@ def to_odoo_dt(iso_str: str | None) -> str | None:
         return iso_str
 
 # ---------------------------------------------------------------------------
-# Step 4b - Attendance record sync (SYNC_MODE=attendance)
+# Step 4b - Attendance record sync
 # ---------------------------------------------------------------------------
 
 # Stavario type ids that mean the employee has arrived / is present
@@ -542,12 +557,8 @@ async def main() -> None:
             log.error("Odoo lookup is empty - check ODOO_API_KEY and that employees have x_studio_cislo_stavario set.")
             return
 
-        if cfg.sync_mode == "attendance":
-            log.info("Running in ATTENDANCE mode.")
-            await sync_attendance(session, enriched, odoo_lookup)
-        else:
-            log.info("Running in GPS mode.")
-            await write_gps_to_odoo(session, enriched, odoo_lookup)
+        await sync_attendance(session, enriched, odoo_lookup)
+
 
     elapsed = (datetime.now(timezone.utc) - started).total_seconds()
     log.info(f"=== Done in {elapsed:.1f}s ===")
