@@ -26,7 +26,7 @@ import asyncio
 import logging
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 import aiohttp
 
@@ -407,13 +407,14 @@ async def write_gps_to_odoo(
 # ---------------------------------------------------------------------------
 def to_odoo_dt(iso_str: str | None) -> str | None:
     """
-    Converts Stavario datetime string to Odoo's expected format.
-    e.g. "2026-06-11T08:30:00.000" → "2026-06-11 08:30:00"
+    Stavario datetime is local time (UTC+2), Odoo stores in UTC.
+    Subtract 2 hours so Odoo stores correct UTC and displays correct local time.
     """
     if not iso_str:
         return None
     try:
-        return datetime.fromisoformat(iso_str).strftime("%Y-%m-%d %H:%M:%S")
+        dt = datetime.fromisoformat(iso_str) - timedelta(hours=2)
+        return dt.strftime("%Y-%m-%d %H:%M:%S")
     except ValueError:
         log.warning(f"Could not parse datetime '{iso_str}' — passing as-is.")
         return iso_str
