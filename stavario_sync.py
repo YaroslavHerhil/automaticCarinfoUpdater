@@ -41,38 +41,21 @@ log = logging.getLogger("stavario_sync")
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-# class Config:
-#     base_url:     str = os.environ["STAVARIO_BASE_URL"].rstrip("/")
-#     username:     str = os.environ["STAVARIO_USERNAME"]
-#     password:     str = os.environ["STAVARIO_PASSWORD"]
-#     login_path:   str = os.environ["STAVARIO_LOGIN_PATH"]
-#     list_path:    str = os.environ["STAVARIO_LIST_PATH"]
-#     detail_path:  str = os.environ["STAVARIO_DETAIL_PATH"]
-#     odoo_url:     str = os.environ["ODOO_URL"].rstrip("/")
-#     odoo_db:      str = os.environ["ODOO_DB"]
-#     odoo_api_key: str = os.environ["ODOO_API_KEY"]
-#     page_size:    int = int(os.environ.get("PAGE_SIZE", 100))
-#     max_concurrent: int = int(os.environ.get("MAX_CONCURRENT", 10))
-#     # "gps" = update GPS fields on hr.employee (current behaviour)
-#     # "attendance" = create/close hr.attendance records
-#     sync_mode:    str = os.environ.get("SYNC_MODE", "gps")
-
-
-
 class Config:
-    base_url:         str = "https://stavariooldapi.azurewebsites.net/".rstrip("/")
-    username:         str = "yarik.342.ua.itstep@gmail.com"
-    password:         str = "lmafik4ezw"
-    login_path:       str = "/Auth"
-    list_path:        str = "/Records/GetRecordsList"
-    detail_path:      str = "/Records/GetRecordDetail"
-    odoo_url:     str = "https://globalee.odoo.com/json/2"
-    odoo_db:      str = "globalee"
-    odoo_api_key: str = "1e4e5454277c149ea49340c97135298433eb15ba"
-    page_size:        int = int(100)
-    max_concurrent:   int = int(10)
-    sync_mode:        str = "attendance"
-
+    base_url:     str = os.environ["STAVARIO_BASE_URL"].rstrip("/")
+    username:     str = os.environ["STAVARIO_USERNAME"]
+    password:     str = os.environ["STAVARIO_PASSWORD"]
+    login_path:   str = os.environ["STAVARIO_LOGIN_PATH"]
+    list_path:    str = os.environ["STAVARIO_LIST_PATH"]
+    detail_path:  str = os.environ["STAVARIO_DETAIL_PATH"]
+    odoo_url:     str = os.environ["ODOO_URL"].rstrip("/")
+    odoo_db:      str = os.environ["ODOO_DB"]
+    odoo_api_key: str = os.environ["ODOO_API_KEY"]
+    page_size:    int = int(os.environ.get("PAGE_SIZE", 100))
+    max_concurrent: int = int(os.environ.get("MAX_CONCURRENT", 10))
+    # "gps" = update GPS fields on hr.employee (current behaviour)
+    # "attendance" = create/close hr.attendance records
+    sync_mode:    str = os.environ.get("SYNC_MODE", "gps")
 
 cfg = Config()
 
@@ -309,11 +292,11 @@ async def odoo_call(
         "X-Odoo-Database": cfg.odoo_db,
     }
     async with session.post(url, json=params, headers=headers) as resp:
-        
+
         if resp.status >= 400:
             text = await resp.text()
             raise RuntimeError(f"Odoo {resp.status}: {text}")
-        
+
         data = await resp.json()
     if isinstance(data, dict) and data.get("error"):
         raise RuntimeError(f"Odoo API error: {data['error']}")
@@ -337,7 +320,7 @@ async def build_odoo_lookup(session: aiohttp.ClientSession) -> dict[str, int]:
         method="search_read",
         params={
             "fields": ["id", "name", "x_studio_cislo_stavario"],
-            "limit": 0, 
+            "limit": 0,
             "domain": [["x_studio_cislo_stavario", "!=", False]]
         },
     )
@@ -401,10 +384,10 @@ async def write_gps_to_odoo(
                 session,
                 model="hr.employee",
                 method="write",
-            
+
                 params={"vals":values,"ids":odoo_id},
             )
-            
+
             success += 1
             log.info(f"  ✓ Updated Odoo employee id={odoo_id} (code='{code}', name='{name}')")
         except Exception as exc:
@@ -535,7 +518,7 @@ async def sync_attendance(
 
 
 
-# where things happen 
+# where things happen
 
 async def main() -> None:
     log.info("=== Stavario -> Odoo GPS sync starting ===")
@@ -543,7 +526,7 @@ async def main() -> None:
 
     connector = aiohttp.TCPConnector(limit=cfg.max_concurrent + 5)
     async with aiohttp.ClientSession(connector=connector) as session:
-        await auth.token(session)  
+        await auth.token(session)
 
         latest = await fetch_latest_per_employee(session)
         if not latest:
