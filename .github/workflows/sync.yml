@@ -30,8 +30,9 @@ jobs:
           STAVARIO_LOGIN_PATH:  ${{ secrets.STAVARIO_LOGIN_PATH }}
           STAVARIO_LIST_PATH:   ${{ secrets.STAVARIO_LIST_PATH }}
           STAVARIO_DETAIL_PATH: ${{ secrets.STAVARIO_DETAIL_PATH }}
-          ODOO_WEBHOOK_URL:     ${{ secrets.ODOO_WEBHOOK_URL }}
-          ODOO_WEBHOOK_TOKEN:   ${{ secrets.ODOO_WEBHOOK_TOKEN }}
+          ODOO_URL:             ${{ secrets.ODOO_URL }}
+          ODOO_DB:              ${{ secrets.ODOO_DB }}
+          ODOO_API_KEY:         ${{ secrets.ODOO_API_KEY }}
           PAGE_SIZE:            "100"
           MAX_CONCURRENT:       "10"
         run: python stavario_sync.py
