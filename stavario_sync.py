@@ -1,26 +1,4 @@
-"""
-Stavario -> Odoo GPS sync
-------------------------
-GitHub Actions entry point. Run as:
-    python stavario_sync.py
 
-Required environment variables (set as GitHub Actions secrets):
-    STAVARIO_BASE_URL    e.g. https://api.stavario.com
-    STAVARIO_USERNAME
-    STAVARIO_PASSWORD
-    STAVARIO_LOGIN_PATH  e.g. /api/auth/login
-    STAVARIO_LIST_PATH   e.g. /api/attendance
-    STAVARIO_DETAIL_PATH e.g. /api/attendance  (record id appended as /<id>)
-    ODOO_URL             e.g. https://globalee.odoo.com
-    ODOO_DB              your Odoo database name, sent as X-Odoo-Database header
-                         (for globalee.odoo.com this is usually just "globalee")
-    ODOO_API_KEY         generated in Odoo Settings -> Technical -> API Keys
-                         uses Bearer token auth - no password needed
-
-Optional:
-    PAGE_SIZE            records per page (default: 100)
-    MAX_CONCURRENT       max parallel detail calls (default: 10)
-"""
 
 import asyncio
 import logging
@@ -42,17 +20,22 @@ log = logging.getLogger("stavario_sync")
 # Config
 # ---------------------------------------------------------------------------
 class Config:
-    base_url:     str = os.environ["STAVARIO_BASE_URL"].rstrip("/")
-    username:     str = os.environ["STAVARIO_USERNAME"]
-    password:     str = os.environ["STAVARIO_PASSWORD"]
-    login_path:   str = os.environ["STAVARIO_LOGIN_PATH"]
-    list_path:    str = os.environ["STAVARIO_LIST_PATH"]
-    detail_path:  str = os.environ["STAVARIO_DETAIL_PATH"]
-    odoo_url:     str = os.environ["ODOO_URL"].rstrip("/")
-    odoo_db:      str = os.environ["ODOO_DB"]
-    odoo_api_key: str = os.environ["ODOO_API_KEY"]
-    page_size:    int = int(os.environ.get("PAGE_SIZE", 100))
-    max_concurrent: int = int(os.environ.get("MAX_CONCURRENT", 10))
+    base_url:                   str = os.environ["STAVARIO_BASE_URL"].rstrip("/")
+    username:                   str = os.environ["STAVARIO_USERNAME"]
+    password:                   str = os.environ["STAVARIO_PASSWORD"]
+    login_path:                 str = os.environ["STAVARIO_LOGIN_PATH"]
+    list_path:                  str = os.environ["STAVARIO_LIST_PATH"]
+    detail_path:                str = os.environ["STAVARIO_DETAIL_PATH"]
+    building_detail_path:       str = os.environ["STAVARIO_BUILDING_DETAIL_PATH"]
+    odoo_url:                   str = os.environ["ODOO_URL"].rstrip("/")
+    odoo_db:                    str = os.environ["ODOO_DB"]
+    odoo_api_key:               str = os.environ["ODOO_API_KEY"]
+    page_size:                  int = int(os.environ.get("PAGE_SIZE", 100))
+    max_concurrent:             int = int(os.environ.get("MAX_CONCURRENT", 10))
+
+
+
+
 
 cfg = Config()
 
@@ -213,6 +196,16 @@ async def fetch_detail(
     async with semaphore:
         return await get_json(session, url)
 
+async def fetch_building_detail(
+    session: aiohttp.ClientSession,
+    semaphore: asyncio.Semaphore,
+    record_id: int,
+) -> dict:
+    """GET <detail_path>/<id> - id is part of the URL path, no body or params."""
+    url = f"{cfg.base_url}{cfg.building_detail_path}/{record_id}"
+    async with semaphore:
+        return await get_json(session, url)
+
 
 async def enrich_with_gps(
     session: aiohttp.ClientSession,
@@ -223,25 +216,43 @@ async def enrich_with_gps(
     Merges GPS fields back into each employee's latest record.
     Skips employees where GPS is unavailable (0,0 or missing).
     """
-    semaphore = asyncio.Semaphore(cfg.max_concurrent)
+    semaphore1 = asyncio.Semaphore(cfg.max_concurrent)
     employee_ids = list(latest.keys())
 
     tasks = {
         eid: asyncio.create_task(
-            fetch_detail(session, semaphore, latest[eid]["id"])
+            fetch_detail(session, semaphore1, latest[eid]["id"])
         )
         for eid in employee_ids
     }
 
+    semaphore2 = asyncio.Semaphore(cfg.max_concurrent)
+
+    tasks_buildings = {
+        eid: asyncio.create_task(
+            fetch_building_detail(session, semaphore2, latest[eid]["buildingId"])
+        )
+        for eid in employee_ids
+    }
+
+
+
     results = []
     for eid, task in tasks.items():
         base_record = latest[eid]
+
         try:
             detail = await task
         except Exception as exc:
             log.warning(f"Detail fetch failed for employeeId={eid} (record id={base_record['id']}): {exc}")
             continue
+        try:
+            building_detail = await tasks_buildings[eid]
+        except:
+            log.warning(f"Building detail fetch failed for employeeId={eid} (record id={base_record['id']}): {exc}")
 
+
+        building_stavario_code = building_detail.get("code")
         gps_x = detail.get("record").get("gpsX") or base_record.get("gpsX", 0)
         gps_y = detail.get("record").get("gpsY") or base_record.get("gpsY", 0)
 
@@ -260,7 +271,10 @@ async def enrich_with_gps(
             "gpsY":     gps_y,   # longitude
             "accuracyGps":   detail.get("accuracyGps") or base_record.get("accuracyGps"),
             "type":          base_record.get("type"),
+            "buildingCode": building_stavario_code,
+
         })
+
 
     log.info(f"GPS data enriched for {len(results)}/{len(employee_ids)} employees.")
     return results
@@ -302,7 +316,7 @@ async def odoo_call(
 
 
 # ---------------------------------------------------------------------------
-# Step 4 - Build Odoo employee lookup and write GPS data    
+# Step 4 - Build Odoo employee lookup and write GPS data
 # Deprecated.
 # ---------------------------------------------------------------------------
 
@@ -339,6 +353,38 @@ async def build_odoo_lookup(session: aiohttp.ClientSession) -> dict[str, int]:
     return lookup
 
 
+async def build_odoo_building_lookup(session: aiohttp.ClientSession) -> dict[str, int]:
+    """
+    !!DEPRECATED!!
+    Fetches all hr.employee records that have x_studio_cislo_stavario set.
+    Returns {code: odoo_employee_id} where code is the 3-char Stavario identifier.
+    Logs a warning for any duplicate codes (shouldn't happen, but good to know).
+    """
+    log.info("Fetching Odoo employee lookup table...")
+    records = await odoo_call(
+        session,
+        model="x_construction_project",
+        method="search_read",
+        params={
+            "fields": ["id", "x_name", "x_studio_code"],
+            "limit": 0,
+            "domain": [["x_studio_code", "!=", False]]
+        },
+    )
+
+    lookup: dict[str, int] = {}
+    for rec in records:
+        code = (rec.get("x_studio_code") or "").strip()
+        if not code:
+            continue
+        if code in lookup:
+            log.warning(f"Duplicate x_studio_code='{code}' on construction proj id={rec['id']} ('{rec['name']}') - skipping duplicate.")
+            continue
+        lookup[code] = rec["id"]
+
+    log.info(f"Odoo lookup ready: {len(lookup)} employees with Stavario codes.")
+    return lookup
+
 async def write_gps_to_odoo(
     session: aiohttp.ClientSession,
     enriched: list[dict],
@@ -372,9 +418,6 @@ async def write_gps_to_odoo(
             "x_studio_last_seen_lat":    record["gpsX"],
             "x_studio_last_seen_lng":    record["gpsY"],
         }
-
-
-
 
         print(f"|\n{[odoo_id]}\n|\n{values}\n|----")
         print(f"{[[odoo_id], values]}\n|")
@@ -433,6 +476,7 @@ async def sync_attendance(
     session: aiohttp.ClientSession,
     enriched: list[dict],
     odoo_lookup: dict[str, int],
+    building_lookup: dict[str, int]
 ) -> None:
     """
     For each enriched record:
@@ -449,6 +493,7 @@ async def sync_attendance(
         name  = record.get("employeeName") or ""
         code  = name[:3].strip()
         rtype = record.get("type")
+        buildcode = record.get("buildingCode")
 
         if rtype not in CHECKIN_TYPES and rtype not in CHECKOUT_TYPES:
             log.info(f"  - Skipping type={rtype} for '{name}'")
@@ -460,6 +505,15 @@ async def sync_attendance(
             log.warning(f"No Odoo employee for code '{code}' (name='{name}') - skipping.")
             skipped += 1
             continue
+
+        odoo_build_id = building_lookup.get(buildcode)
+        if odoo_build_id is None:
+            log.warning(f"No Odoo construction for '{code}' (employee name='{name}') - skipping.")
+            # remove skip later
+            skipped += 1
+            continue
+
+
 
         open_records = await odoo_call(
             session,
@@ -488,7 +542,7 @@ async def sync_attendance(
                         session,
                         model="hr.attendance",
                         method="create",
-                        params={"vals_list": {"employee_id": odoo_id, "check_in": dt, "x_studio_gps_latitude": record["gpsX"], "x_studio_gps_longitude": record["gpsY"], }},
+                        params={"vals_list": {"employee_id": odoo_id, "check_in": dt, "x_studio_gps_latitude": record["gpsX"], "x_studio_gps_longitude": record["gpsY"], "x_studio_project": odoo_build_id}},
                     )
                     success += 1
                     log.info(f"  ✓ Created attendance check-in for employee id={odoo_id} ('{name}') at {dt}")
@@ -502,7 +556,7 @@ async def sync_attendance(
                         session,
                         model="hr.attendance",
                         method="write",
-                        params={"ids": open_id, "vals": {"check_out": dt, "x_studio_gps_latitude": record["gpsX"], "x_studio_gps_longitude": record["gpsY"],}},
+                        params={"ids": open_id, "vals": {"check_out": dt, "x_studio_gps_latitude": record["gpsX"], "x_studio_gps_longitude": record["gpsY"],"x_studio_project": odoo_build_id}},
                     )
                     success += 1
                     log.info(f"  ✓ Closed attendance #{open_id} for employee id={odoo_id} ('{name}') at {dt}")
@@ -539,8 +593,11 @@ async def main() -> None:
         if not odoo_lookup:
             log.error("Odoo lookup is empty - check ODOO_API_KEY and that employees have x_studio_cislo_stavario set.")
             return
-
-        await sync_attendance(session, enriched, odoo_lookup)
+        odoo_buildings_lookup = await build_odoo_building_lookup(session)
+        if not odoo_buildings_lookup:
+            log.error("Odoo buildings lookup is empty - check ODOO_API_KEY and that buildings have x_studio_code set.")
+            return
+        await sync_attendance(session, enriched, odoo_lookup, odoo_buildings_lookup)
 
 
     elapsed = (datetime.now(timezone.utc) - started).total_seconds()

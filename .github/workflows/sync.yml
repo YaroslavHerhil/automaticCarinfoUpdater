@@ -29,6 +29,7 @@ jobs:
           STAVARIO_LOGIN_PATH:  ${{ secrets.STAVARIO_LOGIN_PATH }}
           STAVARIO_LIST_PATH:   ${{ secrets.STAVARIO_LIST_PATH }}
           STAVARIO_DETAIL_PATH: ${{ secrets.STAVARIO_DETAIL_PATH }}
+          STAVARIO_BUILDING_DETAIL_PATH: ${{ secrets.STAVARIO_BUILDING_DETAIL_PATH }}
           ODOO_URL:             ${{ secrets.ODOO_URL }}
           ODOO_DB:              ${{ secrets.ODOO_DB }}
           ODOO_API_KEY:         ${{ secrets.ODOO_API_KEY }}
