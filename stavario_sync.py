@@ -1,5 +1,3 @@
-
-
 import asyncio
 import logging
 import os
@@ -32,6 +30,7 @@ class Config:
     odoo_api_key:               str = os.environ["ODOO_API_KEY"]
     page_size:                  int = int(os.environ.get("PAGE_SIZE", 100))
     max_concurrent:             int = int(os.environ.get("MAX_CONCURRENT", 10))
+
 
 
 
@@ -153,13 +152,17 @@ async def fetch_latest_per_employee(session: aiohttp.ClientSession) -> dict[int,
             log.info("Empty page - stopping pagination.")
             break
 
+
+
+
         new_this_page = 0
         for rec in records:
             eid = rec.get("employeeId")
+            rid = rec.get("id")
             if eid is None:
                 continue
             if eid not in latest:
-                latest[eid] = rec
+                latest[rid] = rec
                 new_this_page += 1
 
         if new_this_page == 0:
@@ -180,6 +183,88 @@ async def fetch_latest_per_employee(session: aiohttp.ClientSession) -> dict[int,
 
     log.info(f"Latest records collected for {len(latest)} employees.")
     return latest
+
+
+# ---------------------------------------------------------------------------
+# Step 1b - Fetch record pfor employees on certain daterange from the list endpoint
+# ---------------------------------------------------------------------------
+
+
+async def fetch_records_bydate(session: aiohttp.ClientSession, certain_date: datetime) -> dict[int, dict]:
+    """
+    Pages through the list endpoint (POST body, sorted by id descending).
+    Highest id = most recent record, so the first occurrence of each
+    employeeId is guaranteed to be their latest entry.
+
+    Stops early once N consecutive pages yield no new employees.
+    Returns a dict of {employeeId: record}.
+    """      
+    url = cfg.base_url + cfg.list_path
+    records_collected: dict[int, dict] = {}
+    page = 1
+    
+    if certain_date is None:
+        certain_date = datetime.now()
+
+    pages_without_new = 0
+    MAX_STALE_PAGES = 3
+
+    while True:
+           
+        body = {
+            "page": page,
+            "pageSize": cfg.page_size,
+            "sortBy": [
+                {"propertyName": "datetime", "descending": True}
+            ],
+            
+            "filters": [
+                {
+                "propertyName": "datetime",
+                "operator": "<",
+                "value": certain_date.strftime("%Y-%m-%dT23:59:59")
+                },
+            ]
+    
+        }
+        log.info(f"Fetching list page {page} (employees collected so far: {len(records_collected)})...")
+        data = await post_json(session, url, body)
+
+        # Response schema has both "items" and "records" - prefer "items"
+        records = data.get("records") or data.get("items") or []
+        if not records:
+            log.info("Empty page - stopping pagination.")
+            break
+
+        next_day_reached = False
+
+        new_this_page = 0
+        for rec in records:
+            eid = rec.get("employeeId")
+            edate = datetime.strptime(rec.get("datetime"), "%Y-%m-%dT%H:%M:%S")
+            rid = rec.get("id")
+            if eid is None:
+                continue
+            elif certain_date.day != edate.day:
+                next_day_reached = True
+            else: 
+                records_collected[rid] = rec
+                
+        if next_day_reached:
+            log.info(f"Reached next date on page {page}.")
+            break
+        else:
+            pages_without_new = 0
+
+        total_count = data.get("totalCount", 0)
+        if total_count and page * cfg.page_size >= total_count:
+            log.info("Late Exit - reached last page.")
+            break
+
+        page += 1
+
+    log.info(f"Records collected for {len(records_collected)} employees for date {certain_date.strftime("%Y-%m-%d")}.")
+    return records_collected
 
 
 # ---------------------------------------------------------------------------
@@ -216,69 +301,62 @@ async def enrich_with_gps(
     Merges GPS fields back into each employee's latest record.
     Skips employees where GPS is unavailable (0,0 or missing).
     """
-    semaphore1 = asyncio.Semaphore(cfg.max_concurrent)
-    employee_ids = list(latest.keys())
+    semaphore = asyncio.Semaphore(cfg.max_concurrent)
+    records_ids = list(latest.keys())
+
 
     tasks = {
-        eid: asyncio.create_task(
-            fetch_detail(session, semaphore1, latest[eid]["id"])
+        rid: asyncio.create_task(
+            fetch_detail(session, semaphore, rid)
         )
-        for eid in employee_ids
+        for rid in records_ids
     }
-
-    semaphore2 = asyncio.Semaphore(cfg.max_concurrent)
 
     tasks_buildings = {
-        eid: asyncio.create_task(
-            fetch_building_detail(session, semaphore2, latest[eid]["buildingId"])
+        rid: asyncio.create_task(
+            fetch_building_detail(session, semaphore, latest[rid]["buildingId"])
         )
-        for eid in employee_ids
+        for rid in records_ids
     }
 
-
-
     results = []
-    for eid, task in tasks.items():
-        base_record = latest[eid]
-
+    for rid, task in tasks.items():
+        base_record = latest[rid]
         try:
             detail = await task
         except Exception as exc:
-            log.warning(f"Detail fetch failed for employeeId={eid} (record id={base_record['id']}): {exc}")
+            log.warning(f"Detail fetch failed for employeeId={base_record['employeeId']} (record id={rid}): {exc}")
             continue
         try:
-            building_detail = await tasks_buildings[eid]
+            building_detail = await tasks_buildings[rid]
         except:
-            log.warning(f"Building detail fetch failed for employeeId={eid} (record id={base_record['id']}): {exc}")
-
+            log.warning(f"Building detail fetch failed for employeeId={base_record['employeeId']} (record id={rid}): {exc}")
 
         building_stavario_code = building_detail.get("code")
         gps_x = detail.get("record").get("gpsX") or base_record.get("gpsX", 0)
         gps_y = detail.get("record").get("gpsY") or base_record.get("gpsY", 0)
 
         if not gps_x and not gps_y:
-            log.info(f"No GPS data for employeeId={eid} - skipping.")
+            log.info(f"No GPS data for employeeId={base_record['employeeId']} - skipping.")
             continue
 
         results.append({
-            "employeeId":    eid,
+            "employeeId":    base_record['employeeId'],
             "employeeName":  base_record.get("employeeName"),
             "employeeGroup": base_record.get("employeeGroup"),
             "buildingName":  base_record.get("buildingName"),
             "buildingId":    base_record.get("buildingId"),
             "datetime":      base_record.get("datetime"),
-            "gpsX":     gps_x,   # latitude
-            "gpsY":     gps_y,   # longitude
+            "gpsX":          gps_x,   # latitude
+            "gpsY":          gps_y,   # longitude
             "accuracyGps":   detail.get("accuracyGps") or base_record.get("accuracyGps"),
             "type":          base_record.get("type"),
-            "buildingCode": building_stavario_code,
+            "buildingCode":  building_stavario_code,
 
         })
 
-
-    log.info(f"GPS data enriched for {len(results)}/{len(employee_ids)} employees.")
+    log.info(f"GPS data enriched for {len(results)}/{len(records_ids)} employees.")
     return results
-
 
 # ---------------------------------------------------------------------------
 # Step 3 - Odoo JSON-2 helpers
@@ -313,7 +391,6 @@ async def odoo_call(
     if isinstance(data, dict) and data.get("error"):
         raise RuntimeError(f"Odoo API error: {data['error']}")
     return data
-
 
 # ---------------------------------------------------------------------------
 # Step 4 - Build Odoo employee lookup and write GPS data
@@ -476,7 +553,8 @@ async def sync_attendance(
     session: aiohttp.ClientSession,
     enriched: list[dict],
     odoo_lookup: dict[str, int],
-    building_lookup: dict[str, int]
+    building_lookup: dict[str, int], 
+    certain_date: datetime
 ) -> None:
     """
     For each enriched record:
@@ -485,9 +563,13 @@ async def sync_attendance(
       - type in CHECKOUT_TYPES -> find open hr.attendance for this employee;
                                   if one exists, close it with check_out = record datetime
       - anything else          -> skip
+    
     """
     success = 0
     skipped = 0
+
+    enriched.reverse()
+
 
     for record in enriched:
         name  = record.get("employeeName") or ""
@@ -509,7 +591,6 @@ async def sync_attendance(
         odoo_build_id = building_lookup.get(buildcode)
         if odoo_build_id is None:
             log.warning(f"No Odoo construction for '{code}' (employee name='{name}') - skipping.")
-            # remove skip later
             skipped += 1
             continue
 
@@ -522,7 +603,7 @@ async def sync_attendance(
             params={
                 "domain": [
                     ["employee_id", "=", odoo_id],
-                    ["check_out",   "=", False],
+                    ["date", "=", certain_date.strftime("%Y-%m-%d")]
                 ],
                 "fields": ["id", "check_in"],
                 "limit":  1,
@@ -532,38 +613,56 @@ async def sync_attendance(
 
         dt = to_odoo_dt(record.get("datetime"))
 
+    
+
+
         try:
-            if rtype in CHECKIN_TYPES:
-                if open_id:
-                    log.info(f"  - Employee id={odoo_id} ('{name}') already has open attendance #{open_id} - skipping check-in.")
-                    skipped += 1
+# check in  -
+            if open_id:
+                log.info(f"Employee id={odoo_id} ('{name}') has an attendance for date {certain_date.strftime("%Y-%m-%dT%H:%M:%S")}, updating it")
+                
+                vals = {"x_studio_gps_latitude": record["gpsX"], "x_studio_gps_longitude": record["gpsY"],"x_studio_project": odoo_build_id}
+                if rtype in CHECKIN_TYPES:
+                    vals["check_in"] = dt
+                elif rtype in CHECKOUT_TYPES:
+                    vals["check_out"] = dt
                 else:
-                    await odoo_call(
-                        session,
-                        model="hr.attendance",
-                        method="create",
-                        params={"vals_list": {"employee_id": odoo_id, "check_in": dt, "x_studio_gps_latitude": record["gpsX"], "x_studio_gps_longitude": record["gpsY"], "x_studio_project": odoo_build_id}},
-                    )
-                    success += 1
-                    log.info(f"  ✓ Created attendance check-in for employee id={odoo_id} ('{name}') at {dt}")
-
-            elif rtype in CHECKOUT_TYPES:
-                if not open_id:
-                    log.info(f"  - No open attendance for employee id={odoo_id} ('{name}') - nothing to close.")
-                    skipped += 1
+                    raise Exception("Unknown record type") 
+                
+                await odoo_call(
+                    session,
+                    model="hr.attendance",
+                    method="write",
+                    params={"ids": open_id, "vals": vals},
+                )
+                success += 1
+                log.info(f"  ✓ Updated attendace record #{open_id} for employee id={odoo_id} ('{name}') at {dt}")
+                
+            else:
+                
+                log.info(f"Employee id={odoo_id} ('{name}') has no attendance record for date {certain_date.strftime("%Y-%m-%dT%H:%M:%S")}, creating it")
+                
+                vals = {"employee_id": odoo_id, "check_in": dt, "x_studio_gps_latitude": record["gpsX"], "x_studio_gps_longitude": record["gpsY"], "x_studio_project": odoo_build_id}
+                if rtype in CHECKIN_TYPES:
+                    vals["check_in"] = dt
+                elif rtype in CHECKOUT_TYPES:
+                    vals["check_out"] = dt
                 else:
-                    await odoo_call(
-                        session,
-                        model="hr.attendance",
-                        method="write",
-                        params={"ids": open_id, "vals": {"check_out": dt, "x_studio_gps_latitude": record["gpsX"], "x_studio_gps_longitude": record["gpsY"],"x_studio_project": odoo_build_id}},
-                    )
-                    success += 1
-                    log.info(f"  ✓ Closed attendance #{open_id} for employee id={odoo_id} ('{name}') at {dt}")
-
+                    raise Exception("Unknown record type") 
+                
+                await odoo_call(
+                    session,
+                    model="hr.attendance",
+                    method="create",
+                    params={"vals_list": vals},
+                )
+                success += 1
+                log.info(f"  ✓ Created attendance check-in for employee id={odoo_id} ('{name}') at {dt}")
+            
         except Exception as exc:
-            log.warning(f"  ✗ Attendance update failed for employee id={odoo_id} ('{name}'): {exc}")
+            log.warning(f"  ✗ Attendance update failed for employee id={odoo_id} ('{name}') ({record.get("datetime")}) : \n{exc}")
             skipped += 1
+
 
     log.info(f"Attendance sync complete: {success} updated, {skipped} skipped.")
 
@@ -580,7 +679,7 @@ async def main() -> None:
     async with aiohttp.ClientSession(connector=connector) as session:
         await auth.token(session)
 
-        latest = await fetch_latest_per_employee(session)
+        latest = await fetch_records_bydate(session, datetime.now())
         if not latest:
             log.warning("No records found - nothing to push.")
             return
@@ -597,7 +696,7 @@ async def main() -> None:
         if not odoo_buildings_lookup:
             log.error("Odoo buildings lookup is empty - check ODOO_API_KEY and that buildings have x_studio_code set.")
             return
-        await sync_attendance(session, enriched, odoo_lookup, odoo_buildings_lookup)
+        await sync_attendance(session, enriched, odoo_lookup, odoo_buildings_lookup, datetime.now())
 
 
     elapsed = (datetime.now(timezone.utc) - started).total_seconds()
