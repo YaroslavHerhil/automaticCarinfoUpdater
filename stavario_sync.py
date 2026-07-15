@@ -1,9 +1,12 @@
 import asyncio
+import json
 import logging
 import os
 import sys
 from datetime import datetime, timezone, timedelta
+import traceback
 
+from odoo_client import cfg, odoo_call
 import aiohttp
 
 logging.basicConfig(
@@ -17,26 +20,36 @@ log = logging.getLogger("stavario_sync")
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-class Config:
-    base_url:                   str = os.environ["STAVARIO_BASE_URL"].rstrip("/")
-    username:                   str = os.environ["STAVARIO_USERNAME"]
-    password:                   str = os.environ["STAVARIO_PASSWORD"]
-    login_path:                 str = os.environ["STAVARIO_LOGIN_PATH"]
-    list_path:                  str = os.environ["STAVARIO_LIST_PATH"]
-    detail_path:                str = os.environ["STAVARIO_DETAIL_PATH"]
-    building_detail_path:       str = os.environ["STAVARIO_BUILDING_DETAIL_PATH"]
-    odoo_url:                   str = os.environ["ODOO_URL"].rstrip("/")
-    odoo_db:                    str = os.environ["ODOO_DB"]
-    odoo_api_key:               str = os.environ["ODOO_API_KEY"]
-    page_size:                  int = int(os.environ.get("PAGE_SIZE", 100))
-    max_concurrent:             int = int(os.environ.get("MAX_CONCURRENT", 10))
+# class Config:
+#     base_url:                   str = os.environ["STAVARIO_BASE_URL"].rstrip("/")
+#     username:                   str = os.environ["STAVARIO_USERNAME"]
+#     password:                   str = os.environ["STAVARIO_PASSWORD"]
+#     login_path:                 str = os.environ["STAVARIO_LOGIN_PATH"]
+#     list_path:                  str = os.environ["STAVARIO_LIST_PATH"]
+#     detail_path:                str = os.environ["STAVARIO_DETAIL_PATH"]
+#     building_detail_path:       str = os.environ["STAVARIO_BUILDING_DETAIL_PATH"]
+#     odoo_url:                   str = os.environ["ODOO_URL"].rstrip("/")
+#     odoo_db:                    str = os.environ["ODOO_DB"]
+#     odoo_api_key:               str = os.environ["ODOO_API_KEY"]
+#     page_size:                  int = int(os.environ.get("PAGE_SIZE", 100))
+#     max_concurrent:             int = int(os.environ.get("MAX_CONCURRENT", 10))
+
+
+
+TEMPLATE_IDS = {
+    "outside_deviation": 72,
+    "missing_checkout": 73,
+    "conflict_detected": 74,
+}
+ 
+# Fallback template for attendance-level issues with no dedicated template
+RECORD_CATCHALL_TEMPLATE_ID = 75
 
 
 
 
 
 
-cfg = Config()
 
 
 
@@ -113,6 +126,159 @@ async def get_json(session: aiohttp.ClientSession, url: str, params: dict | None
             resp.raise_for_status()
             return await resp.json()
     raise RuntimeError("Authentication failed after retry.")
+
+
+
+
+# ---------------------------------------------------------------------------
+# Notofies admin of various issues of the sync 
+# sends a per record email when failure occurs on the record level, or sync level email when failure occurs with the sync itself
+# ---------------------------------------------------------------------------
+
+# async def notify(
+#     session: aiohttp.ClientSession,
+#     error_type: str,
+#     error_message: str,
+#     attendance_id: int | None = None,
+#     template_key: str | None = None,
+#     admin_email: str = cfg.admin_email,
+# ) -> None:
+#     """
+#     Single entry point for all sync notification emails.
+ 
+#     - template_key given          -> explicit known scenario, uses its template
+#     - attendance_id given, no key -> record-level catchall (still renders against the record)
+#     - neither given                -> sync-level catchall, plain mail.mail, no record context
+ 
+#     Never raises — logs instead, so a broken notification can't crash the sync.
+#     """
+#     try:
+#         log.info("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\nAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\nAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\nAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+#         if attendance_id is not None:
+#             template_id = TEMPLATE_IDS.get(template_key) if template_key else None
+#             if template_id is None:
+#                 template_id = RECORD_CATCHALL_TEMPLATE_ID
+ 
+#             await odoo_call(
+#                 session,
+#                 model="mail.template",
+#                 method="send_mail",
+#                 params={
+#                     "ids": [template_id],
+#                     "res_id": attendance_id,
+#                     "force_send": True,
+#                     "email_values": {
+#                         "email_to": admin_email,
+#                         # extra context available to templates that reference it,
+#                         # e.g. ${ctx.get('error_message')} if you wire it into the template
+#                         "email_from": "noreply@globalee.eu",
+#                     },
+#                 },
+#             )
+#         else:
+#             # No record context at all -> build mail.mail directly, no template involved
+#             timestamp = datetime.now(timezone.utc).isoformat()
+#             body_html = (
+#                 f"<p><b>Chyba synchronizace bez přiřazeného záznamu.</b></p>"
+#                 f"<ul>"
+#                 f"<li><b>Čas (UTC):</b> {timestamp}</li>"
+#                 f"<li><b>Typ chyby:</b> {error_type}</li>"
+#                 f"<li><b>Zpráva:</b> {error_message}</li>"
+#                 f"</ul>"
+#             )
+#             await odoo_call(
+#                 session,
+#                 model="mail.mail",
+#                 method="create",
+#                 params={
+#                     "vals_list": {
+#                         "email_to": admin_email,
+#                         "subject": f"[Sync] Chyba: {error_type}",
+#                         "body_html": body_html,
+#                         "state": "outgoing",
+#                         "auto_delete": False,
+#                     }
+#                 },
+#             )
+
+ 
+#     except Exception:
+#         # Last resort: don't let a broken notification take down or mask the real failure
+#         log.error(
+#             "notify() itself failed while handling error_type=%s attendance_id=%s\n%s",
+#             error_type,
+#             attendance_id,
+#         )
+
+
+ 
+async def clear_todays_issues(session: aiohttp.ClientSession) -> None:
+    """
+    Deletes today's x_sync_issue records before a fresh sync run starts logging
+    new ones. Without this, repeated runs on the same day would each add their
+    own copy of the same issue, and the digest would show duplicates.
+ 
+    Call this once at the start of the sync, before any log_issue() calls.
+    """
+    today_start = datetime.now(timezone.utc).strftime("%Y-%m-%d 00:00:00")
+ 
+    existing = await odoo_call(
+        session,
+        model="x_sync_issue",
+        method="search_read",
+        params={
+            "domain": [["x_studio_date", ">=", today_start]],
+            "fields": ["id"],
+        },
+    )
+ 
+    if existing:
+        await odoo_call(
+            session,
+            model="x_sync_issue",
+            method="unlink",
+            params={"ids": [i["id"] for i in existing]},
+        )
+
+
+
+
+async def log_issue(
+    session: aiohttp.ClientSession,
+    issue_type: str,
+    message: str,
+    certaine_date,
+    attendance_id: int | None = None,
+) -> None:
+    """Records an issue in Odoo instead of sending an email directly."""
+    try:
+        log.info("[DEBUG] Logged an issue")
+        await odoo_call(
+            session,
+            model="x_sync_issue",
+            method="create",
+            params={
+                "vals_list": {
+                    "x_name": message,
+                    "x_studio_issue_type": issue_type,
+                    "x_studio_message": message,
+                    "x_studio_attendance_id": attendance_id,
+                    "x_studio_date": certaine_date.strftime("%Y-%m-%d")
+                }
+            },
+        )
+    except Exception:
+        log.error("log_issue() failed for issue_type=%s\n%s", issue_type, traceback.format_exc())
+
+
+
+
+
+
+
+
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -231,7 +397,7 @@ async def fetch_records_bydate(session: aiohttp.ClientSession, certain_date: dat
         data = await post_json(session, url, body)
 
         # Response schema has both "items" and "records" - prefer "items"
-        records = data.get("records") or data.get("items") or []
+        records = data.get("records") or data.get("items") or [] 
         if not records:
             log.info("Empty page - stopping pagination.")
             break
@@ -339,19 +505,21 @@ async def enrich_with_gps(
         if not gps_x and not gps_y:
             log.info(f"No GPS data for employeeId={base_record['employeeId']} - skipping.")
             continue
-
+        log.info(f"[DEBUG] Deviation info is {detail.get("record").get("deviationGps")}; {detail.get("record").get("allowedDeviationGps")}")
         results.append({
-            "employeeId":    base_record['employeeId'],
-            "employeeName":  base_record.get("employeeName"),
-            "employeeGroup": base_record.get("employeeGroup"),
-            "buildingName":  base_record.get("buildingName"),
-            "buildingId":    base_record.get("buildingId"),
-            "datetime":      base_record.get("datetime"),
-            "gpsX":          gps_x,   # latitude
-            "gpsY":          gps_y,   # longitude
-            "accuracyGps":   detail.get("accuracyGps") or base_record.get("accuracyGps"),
-            "type":          base_record.get("type"),
-            "buildingCode":  building_stavario_code,
+            "employeeId":           base_record.get('employeeId'),
+            "employeeName":         base_record.get("employeeName"),
+            "employeeGroup":        base_record.get("employeeGroup"),
+            "buildingName":         base_record.get("buildingName"),
+            "buildingId":           base_record.get("buildingId"),
+            "datetime":             base_record.get("datetime"),
+            "gpsX":                 gps_x,   # latitude
+            "gpsY":                 gps_y,   # longitude
+            "accuracyGps":          detail.get("record").get("accuracyGps") or base_record.get("accuracyGps"),
+            "deviationGps":         detail.get("record").get("deviationGps"),
+            "allowedDeviationGps":  detail.get("record").get("allowedDeviationGps"),
+            "type":                 base_record.get("type"),
+            "buildingCode":         building_stavario_code,
 
         })
 
@@ -362,35 +530,6 @@ async def enrich_with_gps(
 # Step 3 - Odoo JSON-2 helpers
 # ---------------------------------------------------------------------------
 
-async def odoo_call(
-    session: aiohttp.ClientSession,
-    model: str,
-    method: str,
-    params: dict | None = None,
-) -> any:
-    """
-    Calls an Odoo model method via the JSON-2 API.
-
-    Endpoint: POST /{model}/{method}
-    Auth:     Authorization: Bearer <api_key>
-              X-Odoo-Database: <db>
-    """
-    url = f"{cfg.odoo_url}/{model}/{method}"
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {cfg.odoo_api_key}",
-        "X-Odoo-Database": cfg.odoo_db,
-    }
-    async with session.post(url, json=params, headers=headers) as resp:
-
-        if resp.status >= 400:
-            text = await resp.text()
-            raise RuntimeError(f"Odoo {resp.status}: {text}")
-
-        data = await resp.json()
-    if isinstance(data, dict) and data.get("error"):
-        raise RuntimeError(f"Odoo API error: {data['error']}")
-    return data
 
 # ---------------------------------------------------------------------------
 # Step 4 - Build Odoo employee lookup and write GPS data
@@ -567,16 +706,18 @@ async def sync_attendance(
     """
     success = 0
     skipped = 0
-
     enriched.reverse()
-
+    
+    
 
     for record in enriched:
         name  = record.get("employeeName") or ""
         code  = name[:3].strip()
         rtype = record.get("type")
         buildcode = record.get("buildingCode")
-
+        new_attendance_id = int()
+        
+        
         if rtype not in CHECKIN_TYPES and rtype not in CHECKOUT_TYPES:
             log.info(f"  - Skipping type={rtype} for '{name}'")
             skipped += 1
@@ -586,16 +727,9 @@ async def sync_attendance(
         if odoo_id is None:
             log.warning(f"No Odoo employee for code '{code}' (name='{name}') - skipping.")
             skipped += 1
-            continue
+            continue  
 
         odoo_build_id = building_lookup.get(buildcode)
-        if odoo_build_id is None:
-            log.warning(f"No Odoo construction for '{code}' (employee name='{name}') - skipping.")
-            skipped += 1
-            continue
-
-
-
         open_records = await odoo_call(
             session,
             model="hr.attendance",
@@ -613,15 +747,19 @@ async def sync_attendance(
 
         dt = to_odoo_dt(record.get("datetime"))
 
-    
+        vals = {"x_studio_gps_latitude": record["gpsX"], "x_studio_gps_longitude": record["gpsY"]}
+        
+        odoo_build_id = building_lookup.get(buildcode)
+        if odoo_build_id is None:
+            log.warning(f"No Odoo construction for '{code}' (employee name='{name}') - not skipping, but no construction data will be synced.")
+        else:
+            vals["x_studio_project"] = odoo_build_id    
 
 
         try:
-# check in  -
             if open_id:
                 log.info(f"Employee id={odoo_id} ('{name}') has an attendance for date {certain_date.strftime("%Y-%m-%dT%H:%M:%S")}, updating it")
                 
-                vals = {"x_studio_gps_latitude": record["gpsX"], "x_studio_gps_longitude": record["gpsY"],"x_studio_project": odoo_build_id}
                 if rtype in CHECKIN_TYPES:
                     vals["check_in"] = dt
                 elif rtype in CHECKOUT_TYPES:
@@ -636,13 +774,15 @@ async def sync_attendance(
                     params={"ids": open_id, "vals": vals},
                 )
                 success += 1
-                log.info(f"  ✓ Updated attendace record #{open_id} for employee id={odoo_id} ('{name}') at {dt}")
+                log.info(f"  ✓ Updated attendace record #{open_id} for employee id={odoo_id} ('{name}') at {dt} [{"check out" if rtype in CHECKOUT_TYPES else "check in"}]")
                 
             else:
                 
                 log.info(f"Employee id={odoo_id} ('{name}') has no attendance record for date {certain_date.strftime("%Y-%m-%dT%H:%M:%S")}, creating it")
                 
-                vals = {"employee_id": odoo_id, "check_in": dt, "x_studio_gps_latitude": record["gpsX"], "x_studio_gps_longitude": record["gpsY"], "x_studio_project": odoo_build_id}
+                
+                vals["employee_id"] = odoo_id
+                
                 if rtype in CHECKIN_TYPES:
                     vals["check_in"] = dt
                 elif rtype in CHECKOUT_TYPES:
@@ -650,7 +790,7 @@ async def sync_attendance(
                 else:
                     raise Exception("Unknown record type") 
                 
-                await odoo_call(
+                result = await odoo_call(
                     session,
                     model="hr.attendance",
                     method="create",
@@ -658,11 +798,30 @@ async def sync_attendance(
                 )
                 success += 1
                 log.info(f"  ✓ Created attendance check-in for employee id={odoo_id} ('{name}') at {dt}")
+                new_attendance_id = result if isinstance(result, int) else result.get("id")
+
+            log.info(f"deviationGps: {record.get("deviationGps")}, allowedDeviationGps: {record.get("allowedDeviationGps")}")
+            if record.get("deviationGps") and record.get("deviationGps") > record.get("allowedDeviationGps"):
+                log.info(f"the id is {"open_id" if open_id else "not open_id"} it is {open_id if open_id else new_attendance_id}")
+                await log_issue(session, issue_type="Mimo rozsah odchylky", message="Odhlášení/přihlášení bylo provedeno mimo povolený rozsah odchylek", attendance_id=(open_id if open_id else new_attendance_id), certaine_date=certain_date)
+
+
+                
+                
             
         except Exception as exc:
             log.warning(f"  ✗ Attendance update failed for employee id={odoo_id} ('{name}') ({record.get("datetime")}) : \n{exc}")
             skipped += 1
-
+            
+            exc_json = json.loads(str(exc)[10:])
+            
+            log.info(exc_json)
+            if u'"Check Out" time cannot be earlier than "Check In" time.' in exc_json["message"]:
+                log_issue(session=session, message="Zaměstnanec pravděpodobně zmeškal odhlášení z předchozího dne", issue_type="Chybí odhlášení", attendance_id=(open_id if open_id else new_attendance_id),certaine_date=certain_date)
+            else:
+                log.info(f"[DEBUG]Error message did not contain {'"Check Out" time cannot be earlier than "Check In" time.'}")
+            
+        
 
     log.info(f"Attendance sync complete: {success} updated, {skipped} skipped.")
 
@@ -679,6 +838,9 @@ async def main() -> None:
     async with aiohttp.ClientSession(connector=connector) as session:
         await auth.token(session)
 
+
+        await clear_todays_issues(session)
+
         latest = await fetch_records_bydate(session, datetime.now())
         if not latest:
             log.warning("No records found - nothing to push.")
@@ -687,14 +849,17 @@ async def main() -> None:
         enriched = await enrich_with_gps(session, latest)
         if not enriched:
             log.warning("No GPS-enriched records - nothing to push.")
+            
             return
         odoo_lookup = await build_odoo_lookup(session)
         if not odoo_lookup:
             log.error("Odoo lookup is empty - check ODOO_API_KEY and that employees have x_studio_cislo_stavario set.")
+            
             return
         odoo_buildings_lookup = await build_odoo_building_lookup(session)
         if not odoo_buildings_lookup:
             log.error("Odoo buildings lookup is empty - check ODOO_API_KEY and that buildings have x_studio_code set.")
+            
             return
         await sync_attendance(session, enriched, odoo_lookup, odoo_buildings_lookup, datetime.now())
 
@@ -709,5 +874,6 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         sys.exit(0)
     except Exception as exc:
+        
         log.error(f"Fatal error: {exc}", exc_info=True)
         sys.exit(1)
