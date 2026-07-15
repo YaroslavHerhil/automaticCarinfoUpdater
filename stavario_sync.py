@@ -815,11 +815,11 @@ async def sync_attendance(
             
             exc_json = json.loads(str(exc)[10:])
             
-            log.info(exc_json)
-            if u'"Check Out" time cannot be earlier than "Check In" time.' in exc_json["message"]:
-                log_issue(session=session, message="Zaměstnanec pravděpodobně zmeškal odhlášení z předchozího dne", issue_type="Chybí odhlášení", attendance_id=(open_id if open_id else new_attendance_id),certaine_date=certain_date)
+            log.info(exc_json["message"])
+            if '"Check Out" time cannot be earlier than "Check In" time.' in exc_json["message"]:
+                await log_issue(session=session, message="Zaměstnanec pravděpodobně zmeškal odhlášení z předchozího dne", issue_type="Chybí odhlášení", attendance_id=(open_id if open_id else new_attendance_id),certaine_date=certain_date)
             else:
-                log.info(f"[DEBUG]Error message did not contain {'"Check Out" time cannot be earlier than "Check In" time.'}")
+                await log_issue(session=session, message="Během pokusu o synchronizaci došlo k neznámé chybě", issue_type="Neznámá chyba", attendance_id=(open_id if open_id else new_attendance_id),certaine_date=certain_date)
             
         
 

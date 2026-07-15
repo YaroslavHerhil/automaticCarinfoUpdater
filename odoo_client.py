@@ -3,7 +3,7 @@ import os
 
 import aiohttp
 
-# ---------------------------------------------------------------------------
+# # ---------------------------------------------------------------------------
 class Config:
     base_url:                   str = os.environ["STAVARIO_BASE_URL"].rstrip("/")
     username:                   str = os.environ["STAVARIO_USERNAME"]
@@ -18,6 +18,8 @@ class Config:
     page_size:                  int = int(os.environ.get("PAGE_SIZE", 100))
     max_concurrent:             int = int(os.environ.get("MAX_CONCURRENT", 10))
     admin_email:                str = os.environ["ADMIN_EMAIL"]
+
+
 
 cfg = Config()
 
