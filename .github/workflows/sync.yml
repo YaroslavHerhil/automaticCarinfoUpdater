@@ -33,6 +33,7 @@ jobs:
           ODOO_URL:             ${{ secrets.ODOO_URL }}
           ODOO_DB:              ${{ secrets.ODOO_DB }}
           ODOO_API_KEY:         ${{ secrets.ODOO_API_KEY }}
+          ADMIN_EMAIL:          ${{ secrets.ADMIN_EMAIL }}
           PAGE_SIZE:            "100"
           MAX_CONCURRENT:       "10"
         run: python stavario_sync.py
