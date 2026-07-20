@@ -20,7 +20,6 @@ class Config:
     admin_email:                str = os.environ["ADMIN_EMAIL"]
 
 
-
 cfg = Config()
 
 

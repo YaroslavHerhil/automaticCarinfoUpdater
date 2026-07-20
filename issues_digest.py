@@ -18,8 +18,12 @@ async def send_digest(session: aiohttp.ClientSession, admin_email: str = cfg.adm
 
     issues = await odoo_call(
         session,
+        
+        
         model="x_sync_issue",
+        
         method="search_read",
+        
         params={
             "domain": [["x_studio_date", ">=", since]],
             "fields": ["id", "x_studio_issue_type", "x_studio_message", "x_studio_employee_id", "x_studio_date"],

@@ -801,7 +801,7 @@ async def sync_attendance(
                 new_attendance_id = result if isinstance(result, int) else result.get("id")
 
             log.info(f"deviationGps: {record.get("deviationGps")}, allowedDeviationGps: {record.get("allowedDeviationGps")}")
-            if record.get("deviationGps") and record.get("deviationGps") > record.get("allowedDeviationGps"):
+            if record.get("deviationGps") and record.get("deviationGps") > record.get("allowedDeviationGps") * 2:
                 log.info(f"the id is {"open_id" if open_id else "not open_id"} it is {open_id if open_id else new_attendance_id}")
                 await log_issue(session, issue_type="Mimo rozsah odchylky", message="Odhlášení/přihlášení bylo provedeno mimo povolený rozsah odchylek", attendance_id=(open_id if open_id else new_attendance_id), certaine_date=certain_date)
 
@@ -813,13 +813,15 @@ async def sync_attendance(
             log.warning(f"  ✗ Attendance update failed for employee id={odoo_id} ('{name}') ({record.get("datetime")}) : \n{exc}")
             skipped += 1
             
-            exc_json = json.loads(str(exc)[10:])
-            
-            log.info(exc_json["message"])
-            if '"Check Out" time cannot be earlier than "Check In" time.' in exc_json["message"]:
-                await log_issue(session=session, message="Zaměstnanec pravděpodobně zmeškal odhlášení z předchozího dne", issue_type="Chybí odhlášení", attendance_id=(open_id if open_id else new_attendance_id),certaine_date=certain_date)
-            else:
+            try:
+                exc_json = json.loads(str(exc)[10:])
+                if '"Check Out" time cannot be earlier than "Check In" time.' in exc_json["message"]:
+                    await log_issue(session=session, message="Zaměstnanec pravděpodobně zmeškal odhlášení z předchozího dne", issue_type="Chybí odhlášení", attendance_id=(open_id if open_id else new_attendance_id),certaine_date=certain_date)
+                else:
+                    await log_issue(session=session, message="Během pokusu o synchronizaci došlo k neznámé chybě", issue_type="Neznámá chyba", attendance_id=(open_id if open_id else new_attendance_id),certaine_date=certain_date)
+            except:
                 await log_issue(session=session, message="Během pokusu o synchronizaci došlo k neznámé chybě", issue_type="Neznámá chyba", attendance_id=(open_id if open_id else new_attendance_id),certaine_date=certain_date)
+                
             
         
 
@@ -830,8 +832,8 @@ async def sync_attendance(
 
 # where things happen
 
-async def main() -> None:
-    log.info("=== Stavario -> Odoo GPS sync starting ===")
+async def main(certain_date: datetime) -> None:
+    log.info(f"=== Stavario -> Odoo GPS sync starting -> date = {certain_date.strftime("%Y-%m-%d")} ===")
     started = datetime.now(timezone.utc)
 
     connector = aiohttp.TCPConnector(limit=cfg.max_concurrent + 5)
@@ -841,7 +843,7 @@ async def main() -> None:
 
         await clear_todays_issues(session)
 
-        latest = await fetch_records_bydate(session, datetime.now())
+        latest = await fetch_records_bydate(session, certain_date)
         if not latest:
             log.warning("No records found - nothing to push.")
             return
@@ -861,7 +863,7 @@ async def main() -> None:
             log.error("Odoo buildings lookup is empty - check ODOO_API_KEY and that buildings have x_studio_code set.")
             
             return
-        await sync_attendance(session, enriched, odoo_lookup, odoo_buildings_lookup, datetime.now())
+        await sync_attendance(session, enriched, odoo_lookup, odoo_buildings_lookup, certain_date)
 
 
     elapsed = (datetime.now(timezone.utc) - started).total_seconds()
@@ -870,7 +872,9 @@ async def main() -> None:
 
 if __name__ == "__main__":
     try:
-        asyncio.run(main())
+        asyncio.run(main(certain_date=(datetime.now() - timedelta(days=1))))
+        asyncio.run(main(certain_date=datetime.now()))
+        
     except KeyboardInterrupt:
         sys.exit(0)
     except Exception as exc:
