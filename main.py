@@ -11,10 +11,6 @@ CARAPI_URL =  os.environ["CARAPI_URL"]
 
 
 
-
-# carurl = "https://a1.gpsguard.eu/api/v1/vehicles/group/ZOJO"
-# webhookurl = "https://globalee.odoo.com/web/hook/7d027698-c4ee-4cbc-9fd2-41a5676ac42f"
-
 basic = HTTPBasicAuth(USERNAME, PASSWORD)
 
 
