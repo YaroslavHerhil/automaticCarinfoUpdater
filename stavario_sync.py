@@ -801,8 +801,11 @@ async def sync_attendance(
                 new_attendance_id = result if isinstance(result, int) else result.get("id")
 
             log.info(f"deviationGps: {record.get("deviationGps")}, allowedDeviationGps: {record.get("allowedDeviationGps")}")
-            if record.get("deviationGps") and record.get("deviationGps") > record.get("allowedDeviationGps") * 2:
+            if record.get("deviationGps") and record.get("deviationGps") > record.get("allowedDeviationGps") * 2 and str(record.get("buildingId")) != "60055557":
+                
+                
                 log.info(f"the id is {"open_id" if open_id else "not open_id"} it is {open_id if open_id else new_attendance_id}")
+                
                 await log_issue(session, issue_type="Mimo rozsah odchylky", message="Odhlášení/přihlášení bylo provedeno mimo povolený rozsah odchylek", attendance_id=(open_id if open_id else new_attendance_id), certaine_date=certain_date)
 
 

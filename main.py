@@ -28,7 +28,7 @@ for car in allcars:
         json=payload,
         headers={"Content-Type": "application/json"}
     )
-    print("Status Code", response.status_code)
+    print("Status Code", response.status_code)  
     print("Response", response.text)
     
     #1AH B685
