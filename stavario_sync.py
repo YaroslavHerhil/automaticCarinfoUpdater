@@ -212,7 +212,7 @@ async def get_json(session: aiohttp.ClientSession, url: str, params: dict | None
 
 
  
-async def clear_todays_issues(session: aiohttp.ClientSession) -> None:
+async def clear_certain_date_issues(session: aiohttp.ClientSession, certain_date) -> None:
     """
     Deletes today's x_sync_issue records before a fresh sync run starts logging
     new ones. Without this, repeated runs on the same day would each add their
@@ -220,14 +220,13 @@ async def clear_todays_issues(session: aiohttp.ClientSession) -> None:
  
     Call this once at the start of the sync, before any log_issue() calls.
     """
-    today_start = datetime.now(timezone.utc).strftime("%Y-%m-%d 00:00:00")
  
     existing = await odoo_call(
         session,
         model="x_sync_issue",
         method="search_read",
         params={
-            "domain": [["x_studio_date", ">=", today_start]],
+            "domain": [["x_studio_date", ">=", certain_date]],
             "fields": ["id"],
         },
     )
@@ -844,7 +843,7 @@ async def main(certain_date: datetime) -> None:
         await auth.token(session)
 
 
-        await clear_todays_issues(session)
+        await clear_certain_date_issues(session, certain_date)
 
         latest = await fetch_records_bydate(session, certain_date)
         if not latest:
