@@ -226,7 +226,7 @@ async def clear_certain_date_issues(session: aiohttp.ClientSession, certain_date
         model="x_sync_issue",
         method="search_read",
         params={
-            "domain": [["x_studio_date", ">=", certain_date]],
+            "domain": [["x_studio_date", ">=", certain_date.strftime("%Y-%m-%d 00:00:00")]],
             "fields": ["id"],
         },
     )
